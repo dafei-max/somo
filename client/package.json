@@ -1,0 +1,21 @@
+{
+  "name": "somo-client",
+  "version": "1.0.0",
+  "description": "Somo multimodal emotional companion - frontend",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@predy-js/player": "^0.3.4-beta.109",
+    "framer-motion": "^12.35.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.2"
+  }
+}
