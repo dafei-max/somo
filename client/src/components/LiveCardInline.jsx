@@ -5,6 +5,7 @@ export default function LiveCardInline({ cardTitle, cardStatus, imageUrl }) {
   const [imgLoaded, setImgLoaded] = useState(false);
   const isReady = cardStatus === 'ready' && imageUrl;
   const isFailed = cardStatus === 'failed';
+  const isGenerating = cardStatus === 'generating';
 
   return (
     <div className="message-row message-row--left msg-row--card">
@@ -40,6 +41,16 @@ export default function LiveCardInline({ cardTitle, cardStatus, imageUrl }) {
             transition={{ duration: 0.7, ease: 'easeOut' }}
             onLoad={() => setImgLoaded(true)}
           />
+        )}
+
+        {/* Generating overlay */}
+        {isGenerating && !isReady && (
+          <div className="gen-card__loading">
+            <div className="gen-card__loading-dots">
+              <span /><span /><span />
+            </div>
+            <p className="gen-card__loading-text">正在生成...</p>
+          </div>
         )}
 
         {/* Failed overlay */}

@@ -106,6 +106,15 @@ export default function App() {
     pollingRefs.current[cardId] = interval;
   }, []);
 
+  // Auto-start polling for any card that is still generating (covers image_auto and page reloads)
+  useEffect(() => {
+    messages.forEach((msg, i) => {
+      if (msg.type === 'card' && msg.cardStatus === 'generating') {
+        startPolling(msg.cardId, i);
+      }
+    });
+  }, [messages, startPolling]);
+
   const handleSend = async (text) => {
     if (loading) return;
 
@@ -150,6 +159,16 @@ export default function App() {
           type: 'image_confirm',
           cardId: data.cardId,
           cardTitle: data.cardTitle,
+        });
+      }
+
+      if (data.action === 'image_auto') {
+        extraMsgs.push({
+          type: 'card',
+          cardId: data.cardId,
+          cardTitle: data.cardTitle,
+          cardStatus: 'generating',
+          imageUrl: null,
         });
       }
 

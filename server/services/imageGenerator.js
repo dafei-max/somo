@@ -1,19 +1,11 @@
 const axios = require('axios');
 
-const IMAGE_API_KEY = '7978eff571c9436abf9e241f7a1db984';
-const GENERATE_URL = 'https://runway.devops.xiaohongshu.com/openai/liblibai/generate/comfyui/app';
-const STATUS_URL = 'https://runway.devops.xiaohongshu.com/openai/liblibai/generate/comfy/status';
 const FALLBACK_URL =
   'https://liblibai-tmp-image.liblib.cloud/img/b0f7bec31f2f4196829467be29ae1347/16b36c0929b55216956fe7effa0483bd9a974856b921c52c9b4a4b7ddc63d792.png';
 
-const HEADERS = {
-  'api-key': IMAGE_API_KEY,
-  'Content-Type': 'application/json',
-};
-
 /**
  * Generates a Live Card image and returns the image URL.
- * Internally: submits a generation job, then polls for completion.
+ * Calls the aiplat image generation workflow pipeline.
  *
  * @param {object} params
  * @param {string} params.cardTitle
@@ -31,15 +23,9 @@ async function generateCardImage({ cardTitle, mainEmotion, cardMoodColor, skill,
   console.log('[imageGenerator] ── 生成 Prompt ──');
   console.log(' ', prompt);
 
-  const generateUuid = await submitJob(prompt);
-  if (!generateUuid) {
-    console.warn('[imageGenerator] submitJob 返回空 uuid，使用 fallback');
-    return FALLBACK_URL;
-  }
-
-  const imageUrl = await pollForResult(generateUuid);
+  const imageUrl = await callImageWorkflow(prompt);
   if (!imageUrl) {
-    console.warn('[imageGenerator] 轮询未拿到图片，使用 fallback');
+    console.warn('[imageGenerator] workflow 未返回图片 URL，使用 fallback');
     return FALLBACK_URL;
   }
   console.log('[imageGenerator] ✅ 最终图片 URL:', imageUrl);
@@ -94,103 +80,57 @@ function buildImagePrompt({ mainEmotion, skill, emotionScore }) {
   return `${baseScene}, ${qualityTags}`;
 }
 
-/** Step 1: Submit generation job, return generateUuid */
-async function submitJob(prompt) {
-  const payload = {
-    templateUuid: '4df2efa0f18d46dc9758803e478eb51c',
-    generateParams: {
-      '27': {
-        class_type: 'EmptySD3LatentImage',
-        inputs: { width: 1080, height: 1440 },
-      },
-      '45': {
-        class_type: 'CLIPTextEncode',
-        inputs: { text: prompt },
-      },
-      workflowUuid: 'acf2eb0285904477bb0abd3734466c8c',
-    },
-  };
-
+/** Call the aiplat image generation workflow and return the image URL */
+async function callImageWorkflow(prompt) {
   try {
-    console.log('[imageGenerator] ── submitJob payload ──');
-    console.log(JSON.stringify(payload, null, 2));
-    const res = await axios.post(GENERATE_URL, payload, { headers: HEADERS, timeout: 30000 });
-    const data = res.data;
-    console.log('[imageGenerator] ── submitJob 返回 ──');
-    console.log(JSON.stringify(data, null, 2));
+    console.log('[imageGenerator] ── callImageWorkflow ──');
+    console.log('  url:', process.env.IMAGE_WORKFLOW_URL);
+    console.log('  prompt:', prompt);
 
-    if (!data || data.code !== 0) {
-      console.warn('[imageGenerator] submitJob failed:', data?.msg ?? data);
+    const res = await axios.post(
+      process.env.IMAGE_WORKFLOW_URL,
+      { query: prompt, chat_history: [] },
+      {
+        headers: {
+          APP_ID: process.env.IMAGE_WORKFLOW_APP_ID,
+          APP_KEY: process.env.IMAGE_WORKFLOW_APP_KEY,
+        },
+        timeout: 60000,
+      }
+    );
+
+    console.log('[imageGenerator] workflow raw response:', JSON.stringify(res.data).slice(0, 500));
+
+    // Extract text from workflow response: replies[0].content[0].text
+    const rawText = res.data?.replies?.[0]?.content?.[0]?.text;
+    if (!rawText) {
+      console.warn('[imageGenerator] Unexpected workflow response shape:', JSON.stringify(res.data).slice(0, 300));
       return null;
     }
 
-    const uuid = data.data?.generateUuid;
-    if (!uuid) {
-      console.warn('[imageGenerator] No generateUuid in response:', data);
-      return null;
+    // The workflow may return a direct URL or a JSON object containing the URL
+    const trimmed = rawText.trim();
+    if (trimmed.startsWith('http')) {
+      return trimmed;
     }
 
-    console.log('[imageGenerator] Job submitted, uuid:', uuid);
-    return uuid;
+    // Try to parse as JSON and extract image_url / url field
+    try {
+      const cleaned = trimmed.replace(/```json|```/g, '').trim();
+      const match = cleaned.match(/\{[\s\S]*\}/);
+      const data = JSON.parse(match ? match[0] : cleaned);
+      const url = data?.image_url || data?.url || data?.imageUrl || data?.image;
+      if (url) return url;
+      console.warn('[imageGenerator] Parsed JSON but no URL field found:', data);
+    } catch {
+      console.warn('[imageGenerator] Could not parse workflow response as JSON:', trimmed.slice(0, 200));
+    }
+
+    return null;
   } catch (err) {
-    console.warn('[imageGenerator] submitJob error:', err.message);
+    console.warn('[imageGenerator] callImageWorkflow error:', err.message);
     return null;
   }
-}
-
-/** Step 2: Poll status until done (status=5) or failed */
-async function pollForResult(generateUuid, maxAttempts = 60, intervalMs = 10000) {
-  // Initial wait before first poll
-  await sleep(10000);
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    console.log(`[imageGenerator] Polling attempt ${attempt}/${maxAttempts} for uuid: ${generateUuid}`);
-
-    try {
-      const res = await axios.post(
-        STATUS_URL,
-        { generateUuid },
-        { headers: HEADERS, timeout: 15000 }
-      );
-
-      const data = res.data;
-      const generateStatus = data?.data?.generateStatus;
-      console.log(`[imageGenerator] 轮询 ${attempt}/${maxAttempts} status=${generateStatus} 完整返回:`, JSON.stringify(data?.data, null, 2));
-
-      if ([1, 2, 3, 4].includes(generateStatus)) {
-        // Still in progress
-        await sleep(intervalMs);
-        continue;
-      }
-
-      if (generateStatus === 5) {
-        // Done — extract first image URL
-        const images = data?.data?.images ?? [];
-        for (const img of images) {
-          if (img?.imageUrl) {
-            console.log('[imageGenerator] Image ready:', img.imageUrl);
-            return img.imageUrl;
-          }
-        }
-        console.warn('[imageGenerator] Status 5 but no imageUrl found');
-        return null;
-      }
-
-      // Any other status = failure
-      console.warn('[imageGenerator] Unexpected generateStatus:', generateStatus);
-      return null;
-    } catch (err) {
-      console.warn(`[imageGenerator] Poll attempt ${attempt} error:`, err.message);
-      await sleep(intervalMs);
-    }
-  }
-
-  console.warn('[imageGenerator] Max polling attempts exceeded');
-  return null;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 module.exports = { generateCardImage };

@@ -38,12 +38,15 @@ router.post('/', async (req, res) => {
     }
 
     // ── Decide action ────────────────────────────────────────────────────────
-    // Keyword shortcut: user typing "生图" forces image_confirm immediately
-    const forceImage = /生图/.test(text.trim());
-    const action = forceImage ? 'image' : decideAction(session, { emotionScore, emotionIntensity, strategy });
+    // Explicit user request → auto-generate (skip confirm)
+    // Emotion threshold → ask user to confirm first
+    const EXPLICIT_IMAGE_RE = /生图|生成.{0,6}图|给我.{0,6}图|帮.{0,6}图|来.{0,4}张?图|画.{0,6}图|想(要|看).{0,6}图/;
+    // Explicit requests always fire regardless of prior actionFired state
+    const isExplicit = EXPLICIT_IMAGE_RE.test(text.trim());
+    const action = isExplicit ? 'image_auto' : decideAction(session, { emotionScore, emotionIntensity, strategy });
 
     console.log(
-      `[actionRouter] turn=${session.turns} score=${emotionScore?.toFixed(2)} intensity=${emotionIntensity?.toFixed(2)} strategy=${strategy} actionFired=${session.actionFired || 'none'} topicShift=${topicShift} → ${action || 'no action'}`
+      `[actionRouter] turn=${session.turns} score=${emotionScore?.toFixed(2)} intensity=${emotionIntensity?.toFixed(2)} strategy=${strategy} actionFired=${session.actionFired || 'none'} topicShift=${topicShift} explicit=${isExplicit} → ${action || 'no action'}`
     );
 
     const responsePayload = {
@@ -57,8 +60,41 @@ router.post('/', async (req, res) => {
       newSessionId,
     };
 
-    if (action === 'image') {
-      // ── Don't generate yet — ask user to confirm ─────────────────────────
+    if (action === 'image_auto') {
+      // ── User explicitly asked for image — start generating immediately ────
+      session.actionFired = 'image';
+      const cardId = randomUUID();
+      const skill = selectSkill(emotionScore);
+      const title = cardTitle || mainEmotion + '的此刻';
+      const moodColor = skill === 'comfort' ? '#A8C5DA' : skill === 'inspire' ? '#F5C842' : '#B8D4C8';
+
+      pendingCards.set(cardId, {
+        status: 'generating',
+        cardTitle: title,
+        mainEmotion,
+        cardMoodColor: moodColor,
+        skill,
+        emotionScore,
+        sessionId,
+      });
+
+      generateCardImage({ cardTitle: title, mainEmotion, cardMoodColor: moodColor, skill, emotionScore })
+        .then((imageUrl) => {
+          const card = pendingCards.get(cardId);
+          if (card) { card.status = 'ready'; card.imageUrl = imageUrl; }
+        })
+        .catch((err) => {
+          console.warn('[chat] auto image generation failed:', err.message);
+          const card = pendingCards.get(cardId);
+          if (card) card.status = 'failed';
+        });
+
+      responsePayload.action = 'image_auto';
+      responsePayload.cardId = cardId;
+      responsePayload.cardTitle = title;
+
+    } else if (action === 'image') {
+      // ── Emotion-triggered — ask user to confirm first ─────────────────────
       session.actionFired = 'image';
       const cardId = randomUUID();
       const skill = selectSkill(emotionScore);
@@ -78,7 +114,6 @@ router.post('/', async (req, res) => {
       responsePayload.action = 'image_confirm';
       responsePayload.cardId = cardId;
       responsePayload.cardTitle = title;
-
     }
 
     return res.json(responsePayload);
